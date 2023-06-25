@@ -18,6 +18,8 @@ use solana_program::{
 };
 
 declare_id!("11111111111111111111111111111111");
+pub const POOL_AUTHORITY_SEED: &[u8] = b"pool_authority";
+pub const NAME_MAX_LEN: usize = 32;
 
 #[program]
 pub mod swap {
@@ -56,7 +58,7 @@ pub mod swap {
                 ctx.accounts.token_program.to_account_info(),
                 Transfer {
                     from: ctx.accounts.user_token_x.to_account_info(),
-                    to: exchange.reserve_token_x.to_account_info(),
+                    to: ctx.accounts.reserve_token_x.to_account_info(),
                     authority: ctx.accounts.owner.to_account_info(),
                 },
             ),
@@ -68,7 +70,7 @@ pub mod swap {
                 ctx.accounts.token_program.to_account_info(),
                 Transfer {
                     from: ctx.accounts.user_token_y.to_account_info(),
-                    to: exchange.reserve_token_y.to_account_info(),
+                    to: ctx.accounts.reserve_token_y.to_account_info(),
                     authority: ctx.accounts.owner.to_account_info(),
                 },
             ),
@@ -79,15 +81,25 @@ pub mod swap {
     }
 
     // if route 0: SOL-> MOVE, Route 1: MOVE-> SOL
-    pub fn swap(ctx: Context<Swap>, amount_in: u64, route: u64) -> Result<()> {
+    pub fn swap(ctx: Context<Swap>, amount_in: u64, route: u64, name_pool: String) -> Result<()> {
         require!(amount_in > 0, ErrorCode::AmountTooLow);
         let exchange = &mut ctx.accounts.exchange;
+
+        let bump = *ctx.bumps.get("pool_authority").unwrap();
+        let config_key = ctx.accounts.exchange.key();
+        let pda_sign = &[
+            POOL_AUTHORITY_SEED.as_ref(),
+            name_seed(&name_pool),
+            config_key.as_ref(),
+            &[bump],
+        ];
+
         // calculate amount out || Type Curve: Constant Price
         let mut amount_out: u64;
         if route == 0 {
             //SOL-> MOVE
             require!(
-                amount_in <= exchange.reserve_token_y.amount,
+                amount_in <= ctx.accounts.reserve_token_y.amount,
                 ErrorCode::NotEnoughLiquidity
             );
             // Send amount to reserve
@@ -96,7 +108,7 @@ pub mod swap {
                     ctx.accounts.token_program.to_account_info(),
                     Transfer {
                         from: ctx.accounts.user_token_x.to_account_info(),
-                        to: exchange.reserve_token_x.to_account_info(),
+                        to: ctx.accounts.reserve_token_x.to_account_info(),
                         authority: ctx.accounts.pool_authority.to_account_info(),
                     },
                 ),
@@ -109,7 +121,7 @@ pub mod swap {
                 CpiContext::new(
                     ctx.accounts.token_program.to_account_info(),
                     Transfer {
-                        from: exchange.reserve_token_y.to_account_info(),
+                        from: ctx.accounts.reserve_token_y.to_account_info(),
                         to: ctx.accounts.user_token_y.to_account_info(),
                         authority: ctx.accounts.pool_authority.to_account_info(),
                     },
@@ -120,7 +132,7 @@ pub mod swap {
         } else {
             //MOVE-> SOL
             require!(
-                amount_in <= exchange.reserve_token_x.amount,
+                amount_in <= ctx.accounts.reserve_token_x.amount,
                 ErrorCode::NotEnoughLiquidity
             );
             // Send amount to reserve
@@ -129,7 +141,7 @@ pub mod swap {
                     ctx.accounts.token_program.to_account_info(),
                     Transfer {
                         from: ctx.accounts.user_token_y.to_account_info(),
-                        to: exchange.reserve_token_y.to_account_info(),
+                        to: ctx.accounts.reserve_token_y.to_account_info(),
                         authority: ctx.accounts.pool_authority.to_account_info(),
                     },
                 ),
@@ -138,12 +150,11 @@ pub mod swap {
 
             amount_out = amount_in.checked_div(CONSTANT_PRICE).unwrap();
             // send reserve to amount
-
             token::transfer(
                 CpiContext::new(
                     ctx.accounts.token_program.to_account_info(),
                     Transfer {
-                        from: exchange.reserve_token_x.to_account_info(),
+                        from: ctx.accounts.reserve_token_x.to_account_info(),
                         to: ctx.accounts.user_token_x.to_account_info(),
                         authority: ctx.accounts.pool_authority.to_account_info(),
                     },
@@ -222,6 +233,15 @@ pub enum ErrorCode {
     AmountTooLow,
     #[msg("NotEnoughLiquidity")]
     NotEnoughLiquidity,
+}
+
+pub fn name_seed(name: &str) -> &[u8] {
+    let b = name.as_bytes();
+    if b.len() > NAME_MAX_LEN {
+        &b[0..NAME_MAX_LEN]
+    } else {
+        b
+    }
 }
 
 #[cfg(test)]
